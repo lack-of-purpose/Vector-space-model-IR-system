@@ -1,64 +1,64 @@
-import gensim
-from nltk.tokenize import wordpunct_tokenize, word_tokenize
-from nltk.corpus import stopwords
-import spacy
+from nltk.tokenize import word_tokenize, wordpunct_tokenize, RegexpTokenizer
 import ufal.morphodita as morph
-import string
-import sys
+tagger_en = morph.Tagger.load('english-morphium-wsj-140407-no_negation.tagger')
+tagger_cs = morph.Tagger.load('czech-morfflex2.0-pdtc1.0-220710-pos_only.tagger')
 import argparse
 import numpy as np
 from bs4 import BeautifulSoup
 import scipy.sparse as sp
-from collections import OrderedDict
 import re
 import time
 from sklearn.preprocessing import normalize
 import math
-        
+from collections import OrderedDict
+
+def preprocess(text):
+    tokenized = tokenize(text)
+    tokenized_no_stopwords = stopwords_remove(tokenized)
+    
+    return tokenized_no_stopwords
+    
         
 def tokenize(input):
     #whitespace+punctuation
     #(data reading, tokenization, punctuation removal, …)
-    if TOKENIZER == None:
-        en = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
-        cs = 'aábcčdďeéěfghiíjklmnňoópqrřsštťuúůvwxyýzžAÁBCČDĎEÉĚFGHCIÍJKLMNŇÓPQRŘSŤUÚŮVWXYÝZŽ'
-        output = []
-        words = []
-        word = ''
+    output = []
+    if TOKENIZER == 'baseline':
         if LANGUAGE == 'en':
             output = re.findall(r"[a-zA-Z]+", input)
-        else:
+        elif LANGUAGE == 'cs':
             output = re.findall(r"[aábcčdďeéěfghiíjklmnňoópqrřsštťuúůvwxyýzžAÁBCČDĎEÉĚFGHCIÍJKLMNŇÓPQRŘSŤUÚŮVWXYÝZŽ]+", input)
         if ' ' in output:
             output.remove(' ')
-        '''
-        for symbol in input:
-            if LANGUAGE == 'en':
-                if symbol in en:
-                    word += symbol
-                else:
-                    if word != '':
-                        words.append(word)
-                    word = ''
-            else:
-                if symbol in cs:
-                    word += symbol
-                else:
-                    if word != '':
-                        words.append(word)
-                    word = ''
-        for word in words:
-                output.append(word)     
-        '''
-        return output
+        #return output
     elif TOKENIZER == 'nltk':
-        if LANGUAGE == 'cz':
-            return word_tokenize(input, language='czech')
-        else:
-            return word_tokenize(input)
-    elif TOKENIZER == 'gensim':
-        return list(gensim.utils.tokenize(input))
+        if LANGUAGE == 'en':
+            #tokenizer = RegexpTokenizer(r'\w+')
+            output = word_tokenize(input)
+        elif LANGUAGE == 'cs':
+            #tokenizer = RegexpTokenizer(r'\w+')
+            output = word_tokenize(input, language='czech')
+    elif TOKENIZER == 'morphodita':
+        output = []
+        if LANGUAGE == 'en':
+            tokenizer = tagger_en.newTokenizer()
+        elif LANGUAGE == 'cs':
+            tokenizer = tagger_cs.newTokenizer()
+        forms = morph.Forms()
+        lemmas = morph.TaggedLemmas()
+        tokens = morph.TokenRanges()
+        tokenizer.setText(input)
+        while tokenizer.nextSentence(forms, tokens):
+            tagger_en.tag(forms, lemmas)
+            output.extend([lemma.lemma for lemma in lemmas])
+            #for i in range(len(tokens)):
+            #    lemma = lemmas[i]
+            #    output.append(lemma.lemma)
         
+    if not CASE:
+        output = [word.lower() for word in output]
+            
+    return output
     
 def class_equivalence():
     #no
@@ -69,41 +69,48 @@ def stopwords_remove(input):
     #no
     #(none, frequency/POS/lexicon-based)
     if STOPWORDS:
-        en_stop_words = set(stopwords.words('english'))
-        output = [w for w in input if not w in en_stop_words]
-        return output
+        if LANGUAGE == 'en':
+            file = open('english.txt', 'r', encoding='utf-8')
+            stopwords_en = file.readlines()
+            stop = [word.strip() for word in stopwords_en]
+            input = [word for word in input if not word.lower() in stop]
+        if LANGUAGE == 'cs':
+            file = open('czech.txt', 'r', encoding='utf-8')
+            stopwords_cs = file.readlines()
+            stop = [word.strip() for word in stopwords_cs]
+            input = [word for word in input if not word.lower() in stop]  
     
-def query_construction(queries):
+    return input
+    
+def query_construction(query):
     #all words from ”title”
     #(automatic, manual)
-    queries_file = open(queries, encoding='utf-8').read()
-    parseObj = BeautifulSoup(queries_file, features="xml")
-    if len(QUERY) == 1: 
-        titles = parseObj.find_all(QUERY[0])
-        list_of_queries = []
-        for item in titles:
-            query = tokenize(item.next)
-            list_of_queries.append(query)
-    if len(QUERY) == 2:
-        titles = parseObj.find_all(QUERY[0])
-        additional1 = parseObj.find_all(QUERY[1])
-        list_of_queries = []
-        for item1, item2 in zip(titles, additional1):
-            query = tokenize(item1.next) + tokenize(item2.next)
-            list_of_queries.append(query)
-    if len(QUERY) == 3:
-        titles = parseObj.find_all(QUERY[0])
-        additional1 = parseObj.find_all(QUERY[1])
-        additional2 = parseObj.find_all(QUERY[2])
-        list_of_queries = []
-        for item1, item2, item3 in zip(titles, additional1, additional2):
-            query = tokenize(item1.next) + tokenize(item2.next) + tokenize(item3.next)
-            list_of_queries.append(query)
+    parts_of_query = QUERY.split('+')
+    query_id = re.findall(r'<num>(.*?)</num>', query)[0]
+    if len(parts_of_query) == 1:
+        query_extracted = re.findall(r'<title>(.*?)</title>\n', query)[0]
+    if len(parts_of_query) == 2:
+        query_title = re.findall(r'<title>(.*?)</title>\n', query)[0]
+        if parts_of_query[1] == 'desc':
+            query_desc = re.findall(r'<desc>(.*?)</desc>\n', query)[0]
+            query_extracted = f'{query_title} {query_desc}'
+        elif parts_of_query[1] == 'narr':
+            query_narr = re.findall(r'<narr>(.*?)</narr>\n', query)[0]
+            query_extracted = f'{query_title} {query_narr}'
+    if len(parts_of_query) == 3:
+        query_title = re.findall(r'<title>(.*?)</title>\n', query)[0]
+        query_desc = re.findall(r'<desc>(.*?)</desc>\n', query)[0]
+        query_narr = re.findall(r'<narr>(.*?)</narr>\n', query)#[0]
+        if len(query_narr) >= 1:
+            query_narr = query_narr[0]
+        query_extracted = f'{query_title} {query_desc} {query_narr}'
+        
+    return query_id, query_extracted
         
 def df(input: np.ndarray, num_of_docs: int):
     #none
     #(none, idf, probabilistic idf )
-    if DF_TYPE == None:
+    if DF_TYPE == 'no':
         return np.ones(input.shape)
     elif DF_TYPE == 'idf':
         return np.log(num_of_docs/input)
@@ -125,7 +132,7 @@ def similarity(query_matrix: np.ndarray, doc_matrix: np.ndarray, docs_dict, quer
     for query in range(query_matrix.shape[0]):
         query_num = queries_dict[query]
         divident = np.sum(query_matrix[[query], :] * doc_matrix, axis=1)
-        divisor = (np.sum(query_matrix[[query], :]**2) * np.sum(doc_matrix**2, axis=1))
+        divisor = np.sqrt(np.sum(query_matrix[[query], :]**2)) * np.sqrt(np.sum(doc_matrix**2, axis=1))
         sim = np.divide(divident, divisor)#, out=np.zeros_like(divident), where=divisor!=0)
         sim[np.isnan(sim)] = 0
         #np.nan_to_num(sim, nan=0)
@@ -139,7 +146,7 @@ def similarity(query_matrix: np.ndarray, doc_matrix: np.ndarray, docs_dict, quer
         write_to_file(result_file, list_of_relevant_doc_no, query_num, ranks_of_relevant_docs)
 
 def tf_weighting(tf_sparse_matrix):
-    if TF_TYPE == None:
+    if TF_TYPE == 'natural':
         doc_tf_matrix = tf_sparse_matrix
     if TF_TYPE == 'logarithm':
         doc_tf_matrix = 1 + np.log(tf_sparse_matrix)
@@ -154,6 +161,16 @@ def update_df(df_list, word_set, term_dict):
             
     return df_list
 
+def update_df_dict(df_dict, word_set):
+    words = list(word_set)
+    for word in words:
+        if not word in df_dict.keys():
+            df_dict[word] = 1
+        else:
+            df_dict[word] += 1
+            
+    return df_dict
+
 def update_tf(tf_dict, doc_num, doc):
     tf_dict[doc_num] = {}
     for word in doc:
@@ -165,14 +182,14 @@ def update_tf(tf_dict, doc_num, doc):
     return  tf_dict
             
 def doc_tf_idf(tf_matrix, df_vector, N):
-    if DF_TYPE == 'idf':
+    if DF_TYPE == 'no':
+        idf = np.ones(df_vector.shape[0]) #df_vector
+    elif DF_TYPE == 'idf':
         idf = np.log(N/df_vector)
     elif DF_TYPE == 'prob':
         df = np.log((N - df_vector)/df_vector)
         zeros = np.zeros(df.shape)
         idf = np.maximum(zeros, df)
-    else:
-        idf = np.ones(df_vector.shape[0]) #df_vector
     
     tf_idf = tf_matrix*idf#sp.csr_matrix.dot(idf, tf_matrix)
     return normalize(tf_idf, norm='l2')
@@ -180,11 +197,11 @@ def doc_tf_idf(tf_matrix, df_vector, N):
 def get_doc_text(doc):
     if LANGUAGE == 'en':
         doc_id = re.findall(r'<DOCNO>(.*?)</DOCNO>', doc)[0]
-        doc_inside = re.sub(r'<DOC(ID|NO)>(.*?)</DOC(ID|NO)>\n', '', doc)
+        doc_inside = re.sub(r'<DOCID>(.*?)</DOCID>\n', '', doc)
         useful_tags = re.findall(r'<(HD|LD|TE|DH|CP)>((.|\n)*?)</(HD|LD|TE|DH|CP)>', doc_inside)
     if LANGUAGE == 'cs':
         doc_id = re.findall(r'<DOCNO>(.*?)</DOCNO>', doc)[0]
-        doc_inside = re.sub(r'<DOC(ID|NO)>(.*?)</DOC(ID|NO)>\n', '', doc)
+        doc_inside = re.sub(r'<DOCID>(.*?)</DOCID>\n', '', doc)
         useful_tags = re.findall(r'<(TITLE|HEADING|GEOGRAPHY|TEXT)>((.|\n)*?)</(TITLE|HEADING|GEOGRAPHY|TEXT)>', doc_inside)
     current_doc = ''
     for tag in useful_tags:
@@ -193,19 +210,23 @@ def get_doc_text(doc):
     return doc_id, current_doc
     
     
-def parse_xml(filename, collection_size, list_of_docs, vocab):
+def parse_xml(filename, collection_size, list_of_docs, vocab, tf_dict, df_dict):
     file = open(filename, encoding='utf-8')
     f = file.read()
     all_docs = re.findall(r'<DOC>((.|\n)*?)</DOC>', f)
     docs = [doc[0] for doc in all_docs]
     for doc in docs:
         doc_id, current_doc = get_doc_text(doc)
-        doc = tokenize(current_doc)
+        doc = preprocess(current_doc)
+        word_set = set(doc)
         vocab.update(doc)
         collection_size += 1
         list_of_docs.append(doc_id)
+        list_of_docs.append(doc_id)
+        tf_dict = update_tf(tf_dict, doc_id, doc)
+        df_dict = update_df_dict(df_dict, word_set)
     file.close()
-    return vocab, list_of_docs, collection_size
+    return vocab, list_of_docs, collection_size, tf_dict, df_dict
     
 def parse_xml_with_update(filename, df_list, tf_sparse_matrix, term_dict, docs_dict):
     file = open(filename, encoding='utf-8')
@@ -214,7 +235,7 @@ def parse_xml_with_update(filename, df_list, tf_sparse_matrix, term_dict, docs_d
     docs = [doc[0] for doc in all_docs]
     for doc in docs:
         doc_id, current_doc = get_doc_text(doc)
-        doc = tokenize(current_doc)
+        doc = preprocess(current_doc)
         words_set = set(doc)
         df_list = update_df(df_list, words_set, term_dict)
         local_tf = {}
@@ -241,18 +262,25 @@ if __name__ == "__main__":
     parser.add_argument('-d', '--docs', help='List of docs')
     parser.add_argument('-r', '--run_id', help='Run id')
     parser.add_argument('-o', '--output', help='Output file')
-    parser.add_argument('-s', '--system_type', help='Type of the system: baseline or None')
-    parser.add_argument('-t', '--tokenizer', default=None, help='Tokenizer to use: nltk, spacy, gensim')
+    parser.add_argument('-t', '--tokenizer', default='baseline', help='Tokenizer to use: baseline, nltk, morphodita')
     parser.add_argument('-sr', '--stopwords_removal', default=False, help='True or False')
-    parser.add_argument('-tf', '--tf_type', default=None, help='logarithm, boolean')
-    parser.add_argument('-df', '--df_type', default=None, help='idf, prob')
-    parser.add_argument('-qc', '--query_construction', default=['title'], help='List of tags from which to construct a query')
+    parser.add_argument('-c', '--case_sensitivity', default=True, help='True or False')
+    parser.add_argument('-tf', '--tf_type', default='natural', help='natural, logarithm, boolean')
+    parser.add_argument('-df', '--df_type', default='no', help='no, idf, prob')
+    parser.add_argument('-qc', '--query_construction', default='title', help='List of tags from which to construct a query: title, title+desc, title+narr, title+desc+narr')
     args = parser.parse_args()
     
     # params of run 
     LANGUAGE = args.queries.split('.')[0].split('_')[1]
     TOKENIZER = args.tokenizer
-    STOPWORDS = args.stopwords_removal
+    if args.stopwords_removal == 'True':
+        STOPWORDS = True
+    else:
+        STOPWORDS = False
+    if args.case_sensitivity == 'False':
+        CASE = False
+    else:
+        CASE = True
     TF_TYPE = args.tf_type
     DF_TYPE = args.df_type
     QUERY = args.query_construction
@@ -262,21 +290,37 @@ if __name__ == "__main__":
     collection_size = 0
     
     tf_dict = {} # {doc_id: {term1: num1, term2: num2, ...}}
+    df_dict = {}
     list_of_docs = []
     # parse docs
     start_parse_docs = time.time()
     docs_list = open(f'input/{args.docs}', encoding='utf-8').readlines()
     for doc_file in docs_list:
         filename = f'documents_{LANGUAGE}/{doc_file.strip()}'
-        vocab, list_of_docs, collection_size = parse_xml(filename, collection_size, list_of_docs, vocab)  
+        vocab, list_of_docs, collection_size, tf_dict, df_dict = parse_xml(filename, collection_size, list_of_docs, vocab, tf_dict, df_dict)  
     # create dict of terms : id from sorted list
     list_of_terms = list(vocab)
     term_dict = {term: id for id, term in enumerate(sorted(list_of_terms))}
     
     i = len(list_of_docs)
     j = len(list_of_terms)
-    # create dict of docs : id from sorted list
     docs_dict = {doc: id for id, doc in enumerate(sorted(list_of_docs))}
+    tf_sparse_matrix = sp.dok_array((i, j), dtype=np.int64)
+    ordered_tf_dict = OrderedDict(sorted(tf_dict.items()))
+    ordered_df_dict = OrderedDict(sorted(df_dict.items()))
+    for doc_id in ordered_tf_dict.keys():
+        for term in ordered_tf_dict[doc_id].keys():
+            current_col = term_dict[term]
+            current_row = docs_dict[doc_id]
+            if TF_TYPE == 'logarithm':
+                tf_sparse_matrix[current_row, current_col] = 1 + math.log(ordered_tf_dict[doc_id][term])
+            elif TF_TYPE == 'boolean':
+                tf_sparse_matrix[current_row, current_col] = 1
+            else:
+                tf_sparse_matrix[current_row, current_col] = ordered_tf_dict[doc_id][term]
+    docs_dict = {id: doc for id, doc in enumerate(sorted(list_of_docs))}
+    '''
+    # create dict of docs : id from sorted list
     df_list = [0] * len(list_of_terms)
     tf_sparse_matrix = sp.dok_array((i, j), dtype=np.int64)
     for doc_file in docs_list:
@@ -286,11 +330,13 @@ if __name__ == "__main__":
     #tf_sparse_matrix = sp.csr_array((tf, (row, col)), shape=(i, j))
     end_parse_docs = time.time()
     print(f'parse docs:{end_parse_docs-start_parse_docs}')
+    '''
     # sort dict and create doc_no : id dict
     #tf_ordered = OrderedDict(sorted(tf_dict.items()))
     #docs_dict = {id: doc_no for id, doc_no in enumerate(list_of_docs)}
     #df_ordered = sorted(df_list)
-    doc_df_vector = np.array(df_list).astype('int64')
+    doc_df_vector = np.array(list(ordered_df_dict.items()))[:,1].astype('int64')
+    #doc_df_vector = np.array(df_list).astype('int64')
     doc_tf_matrix = tf_sparse_matrix.tocsr()
     #doc_tf_matrix = tf_weighting(doc_tf_matrix)
     doc_tf_idf_matrix = doc_tf_idf(doc_tf_matrix, doc_df_vector, collection_size)
@@ -311,11 +357,12 @@ if __name__ == "__main__":
     q_tf_sparse_matrix = sp.dok_array((i, j), dtype=np.int64)
     current_row = 0
     for query in queries:
-        query_id = re.findall(r'<num>(.*?)</num>', query)[0]
+        #query_id = re.findall(r'<num>(.*?)</num>', query)[0]
+        #query_list.append(query_id)
+        #query_title = re.findall(r'<title>(.*?)</title>\n', query)[0]
+        query_id, query_content = query_construction(query)
         query_list.append(query_id)
-        query_title = re.findall(r'<title>(.*?)</title>\n', query)[0]
-        query_text = tokenize(query_title)
-        tf_vec = [0] * len(list_of_terms)
+        query_text = preprocess(query_content)
         local_tf = {}
         for word in query_text:
             if not word in local_tf.keys():
@@ -327,7 +374,12 @@ if __name__ == "__main__":
                 continue
             current_col = term_dict[word]
             #current_row = query_dict[query_id]
-            q_tf_sparse_matrix[current_row, current_col] = local_tf[word]
+            if TF_TYPE == 'logarithm':
+                q_tf_sparse_matrix[current_row, current_col] = 1 + math.log(local_tf[word])
+            elif TF_TYPE == 'boolean':
+                q_tf_sparse_matrix[current_row, current_col] = 1
+            else:
+                q_tf_sparse_matrix[current_row, current_col] = local_tf[word]
         current_row += 1
     
     # create dict query :  id
