@@ -11,12 +11,14 @@ import math
 from collections import OrderedDict
 
 def preprocess(text):
+    ### preprocess text: tokenization, lemmatization, stopwords removal, case sensitivity ###
     tokenized = tokenize(text)
     tokenized_no_stopwords = stopwords_remove(tokenized)
     
     return tokenized_no_stopwords
     
 def tokenize(input):
+    ### tokenization and case sensitivity ###
     output = []
     if TOKENIZER == 'baseline':
         if LANGUAGE == 'en':
@@ -25,7 +27,6 @@ def tokenize(input):
             output = re.findall(r"[aábcčdďeéěfghiíjklmnňoópqrřsštťuúůvwxyýzžAÁBCČDĎEÉĚFGHCIÍJKLMNŇÓPQRŘSŤUÚŮVWXYÝZŽ]+", input)
         if ' ' in output:
             output.remove(' ')
-        #return output
     elif TOKENIZER == 'nltk':
         if LANGUAGE == 'en':
             output = word_tokenize(input)
@@ -50,6 +51,7 @@ def tokenize(input):
     return output
     
 def stopwords_remove(input):
+    ### remove stopwords based on stopwords lists ###
     if STOPWORDS:
         if LANGUAGE == 'en':
             file = open('english.txt', 'r', encoding='utf-8')
@@ -65,6 +67,7 @@ def stopwords_remove(input):
     return input
     
 def query_construction(query):
+    ### construct query from different tags ###
     parts_of_query = QUERY.split('+')
     query_id = re.findall(r'<num>(.*?)</num>', query)[0]
     if len(parts_of_query) == 1:
@@ -80,19 +83,21 @@ def query_construction(query):
     if len(parts_of_query) == 3:
         query_title = re.findall(r'<title>(.*?)</title>\n', query)[0]
         query_desc = re.findall(r'<desc>(.*?)</desc>\n', query)[0]
-        query_narr = re.findall(r'<narr>(.*?)</narr>\n', query)#[0]
+        query_narr = re.findall(r'<narr>(.*?)</narr>\n', query)
         if len(query_narr) >= 1:
             query_narr = query_narr[0]
         query_extracted = f'{query_title} {query_desc} {query_narr}'
         
     return query_id, query_extracted
 
-def write_to_file(file, list_of_relevants, query_id, scores):
+def write_to_file(file, list_of_relevants, query_id, scores, run_id):
+    ### write results of ranking to file ###
     for i, doc_no, score in zip(range(len(list_of_relevants)),list_of_relevants, scores):
-        file.write(f'{query_id} 0 {doc_no} {i} {score} baseline\n')
+        file.write(f'{query_id} 0 {doc_no} {i} {score} {run_id}\n')
         
     
-def similarity(query_matrix: np.ndarray, doc_matrix: np.ndarray, docs_dict, queries_dict, filename):
+def similarity(query_matrix: np.ndarray, doc_matrix: np.ndarray, docs_dict, queries_dict, filename, run_id):
+    ### compute cosine similarity between queries and docs, rank results and write results to file ###
     result_file = open(filename, 'w', encoding='utf-8')
     for query in range(query_matrix.shape[0]):
         query_num = queries_dict[query]
@@ -103,13 +108,14 @@ def similarity(query_matrix: np.ndarray, doc_matrix: np.ndarray, docs_dict, quer
         sorted_sim = np.argsort(sim)  #indices of sorted similarity scores
         desc = np.flip(sorted_sim)  #reverse it to descending order
         top_ranked = sim[desc[:1000]] #ranks of first 1000 most relevant
-        num_of_relevant = (top_ranked > 0).sum() #amount of relevant docs (sim > 0)
-        nums_of_rel_docs = desc[:num_of_relevant] #numbers of that docs
+        num_of_relevant = (top_ranked > 0).sum() #amount of relevant docs (similarity > 0)
+        nums_of_rel_docs = desc[:num_of_relevant] #ids of these docs
         list_of_relevant_doc_no = [docs_dict[id] for id in nums_of_rel_docs]
         ranks_of_relevant_docs = list(top_ranked[:num_of_relevant])
-        write_to_file(result_file, list_of_relevant_doc_no, query_num, ranks_of_relevant_docs)
+        write_to_file(result_file, list_of_relevant_doc_no, query_num, ranks_of_relevant_docs, run_id)
 
 def update_df(df_dict, word_set):
+    ### update df dictionary ###
     words = list(word_set)
     for word in words:
         if not word in df_dict.keys():
@@ -120,6 +126,7 @@ def update_df(df_dict, word_set):
     return df_dict
 
 def update_tf(tf_dict, doc_num, doc):
+    ### update tf dictionary ###
     tf_dict[doc_num] = {}
     for word in doc:
         if not word in tf_dict[doc_num].keys():
@@ -130,6 +137,7 @@ def update_tf(tf_dict, doc_num, doc):
     return  tf_dict
             
 def tf_idf(tf_matrix, df_vector, N):
+    ### compute tf-idf representation ###
     if DF_TYPE == 'no':
         idf = np.ones(df_vector.shape[0])
     elif DF_TYPE == 'idf':
@@ -143,6 +151,7 @@ def tf_idf(tf_matrix, df_vector, N):
     return normalize(tf_idf, norm='l2')
 
 def get_doc_text(doc):
+    ### extract doc number and text from document using regular expressions ###
     if LANGUAGE == 'en':
         doc_id = re.findall(r'<DOCNO>(.*?)</DOCNO>', doc)[0]
         doc_inside = re.sub(r'<DOCID>(.*?)</DOCID>\n', '', doc)
@@ -158,6 +167,7 @@ def get_doc_text(doc):
     return doc_id, current_doc
     
 def parse_xml(filename, collection_size, list_of_docs, vocab, tf_dict, df_dict):
+    ### parse all docs in xml file and update tf dictionary, df dictionary, vocabulary and list of documents ###
     file = open(filename, encoding='utf-8')
     f = file.read()
     all_docs = re.findall(r'<DOC>((.|\n)*?)</DOC>', f)
@@ -204,22 +214,23 @@ if __name__ == "__main__":
     DF_TYPE = args.df_type
     QUERY = args.query_construction
     
-    # vars
     vocab = set()
     collection_size = 0
-    
     tf_dict = {}
     df_dict = {}
     list_of_docs = []
+    
     # parse docs
     docs_list = open(f'input/{args.docs}', encoding='utf-8').readlines()
     for doc_file in docs_list:
         filename = f'documents_{LANGUAGE}/{doc_file.strip()}'
         vocab, list_of_docs, collection_size, tf_dict, df_dict = parse_xml(filename, collection_size, list_of_docs, vocab, tf_dict, df_dict)  
+    
     # create dict of terms : id from sorted list
     list_of_terms = list(vocab)
     term_dict = {term: id for id, term in enumerate(sorted(list_of_terms))}
     
+    # construct document sparse tf matrix from tf dictionary
     i = len(list_of_docs)
     j = len(list_of_terms)
     docs_dict = {doc: id for id, doc in enumerate(sorted(list_of_docs))}
@@ -237,8 +248,12 @@ if __name__ == "__main__":
             else:
                 tf_sparse_matrix[current_row, current_col] = ordered_tf_dict[doc_id][term]
     docs_dict = {id: doc for id, doc in enumerate(sorted(list_of_docs))}
+    
+    # convert df dictionary to numpy array and document tf matrix to csr format for computations
     doc_df_vector = np.array(list(ordered_df_dict.items()))[:,1].astype('int64')
     doc_tf_matrix = tf_sparse_matrix.tocsr()
+    
+    # compute tf-idf representation for docs
     doc_tf_idf_matrix = tf_idf(doc_tf_matrix, doc_df_vector, collection_size)
     
     # parse queries
@@ -250,6 +265,7 @@ if __name__ == "__main__":
         all_queries = re.findall(r'<top lang="cs">((.|\n)*?)</top>', queries_file)
     queries = [query[0] for query in all_queries]
     i = len(queries)
+    # construct query sparse tf matrix
     q_tf_sparse_matrix = sp.dok_array((i, j), dtype=np.int64)
     current_row = 0
     for query in queries:
@@ -276,8 +292,12 @@ if __name__ == "__main__":
     
     # create dict query :  id
     queries_dict = {num: query for num, query in enumerate(query_list)}
+    
+    # convert query tf matrix to csr format for computations
     q_tf_matrix = q_tf_sparse_matrix.tocsr()
+    
+    # compute tf-idf representation for queries
     q_tf_idf_matrix = tf_idf(q_tf_matrix, doc_df_vector, collection_size)
     
     # compute similarity and rank docs and save results
-    similarity(q_tf_idf_matrix, doc_tf_idf_matrix, docs_dict, queries_dict, args.output)
+    similarity(q_tf_idf_matrix, doc_tf_idf_matrix, docs_dict, queries_dict, args.output, args.run_id)
